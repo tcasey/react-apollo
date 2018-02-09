@@ -3,7 +3,7 @@ import * as renderer from 'react-test-renderer';
 import gql from 'graphql-tag';
 import ApolloClient from 'apollo-client';
 import { InMemoryCache as Cache } from 'apollo-cache-inmemory';
-import { withState } from 'recompose';
+import { withState, branch } from 'recompose';
 import { mockSingleLink } from '../../../../src/test-utils';
 import { ApolloProvider, graphql, Query, QueryResult } from '../../../../src';
 
@@ -538,6 +538,88 @@ describe('[queries] errors', () => {
     renderer.create(
       <ApolloProvider client={client}>
         <Container />
+      </ApolloProvider>,
+    );
+  });
+  fit('correctly sets loading state on remount after a network error', done => {
+    const query: DocumentNode = gql`
+      query somethingelse {
+        allPeople(first: 1) {
+          people {
+            name
+          }
+        }
+      }
+    `;
+    const data = { allPeople: { people: [{ name: 'Luke Skywalker' }] } };
+    const dataTwo = { allPeople: { people: [{ name: 'Princess Leia' }] } };
+
+    type Data = typeof data;
+    const link = mockSingleLink(
+      { request: { query }, error: new Error('This is an error!') },
+      { request: { query }, result: { data: dataTwo } },
+    );
+    const client = new ApolloClient({
+      link,
+      cache: new Cache({ addTypename: false }),
+    });
+
+    let count = 0;
+    const noop = () => null;
+    const Container = graphql<{}, Data>(query, {
+      options: { notifyOnNetworkStatusChange: true },
+    })(
+      class extends React.Component<ChildProps<{}, Data>> {
+        componentWillReceiveProps(props: ChildProps<{}, Data>) {
+          // first payload with error has arrived from server
+          switch (count++) {
+            case 0:
+              expect(props.data!.error!.networkError!.message).toMatch(
+                /This is an error/,
+              );
+              // unmount this component
+              this.props.toggle();
+              setTimeout(() => {
+                // remount after 50 ms
+                this.props.toggle();
+              }, 50);
+              break;
+            case 1:
+              // data has arrived
+              expect(props.data!.loading).toBe(false);
+              break;
+            default:
+              throw new Error('Too many renders.');
+          }
+        }
+
+        componentWillUnmount() {
+          // unmount after first error
+          expect(count).toBe(1);
+        }
+
+        render() {
+          return null;
+        }
+      },
+    );
+
+    class Manager extends React.Component<any> {
+      constructor(props) {
+        super(props);
+        this.state = { show: true };
+      }
+      render() {
+        if (!this.state.show) return null;
+        return this.props.children(() =>
+          this.setState(({ show }) => ({ show: !show })),
+        );
+      }
+    }
+
+    renderer.create(
+      <ApolloProvider client={client}>
+        <Manager>{toggle => <Container toggle={toggle} />}</Manager>
       </ApolloProvider>,
     );
   });
